@@ -13,6 +13,7 @@ import signal
 from threading import Thread
 import pygame  
 from google.oauth2 import service_account
+import wave
 
 # Audio recording parameters
 RATE = 16000
@@ -306,13 +307,13 @@ def main(lang: str, voice: int) -> str:
         questions = update_dict(questions, transcription, 5, "Q", free_space_index)  
         # Prompt enginerring
         prompt = """You are a chatbot that supposed to have a conversation with users.
-                    Dont use asterisks or emojis, try to keep your answer short and to the point.
+                    Dont use asterisks or emojis, try to keep your answer short and to the point. 
                     Every time I will send you this message and the five latest questions and answers I asked and you replied.
                     I will send you the history of our conversation in two dictionary formats,
                     the first will be the questions, and the second will be the answers accordingly.
                     I want you to return an answer to my latest question everytime based on the previous responses,
                     now this is my question: """ + transcription  + """and
-                    this is the history of the questions, and answers: """ + str(questions) + str(answers)
+                    this is the history of the questions, and answers: """ + str(questions) + str(answers) #and be as funny as you can.
          
         start_time_llm = time.time() # Start time (LLM)
         answer = LLM.llm_query(prompt,creds=creds)
@@ -336,9 +337,37 @@ def main(lang: str, voice: int) -> str:
         print(f"\nLLM execution time: {llm_execution_time:.6f} seconds")
         print(f"TTS execution time: {tts_execution_time:.6f} seconds")
         print(f"\nOverall time: {tts_execution_time + llm_execution_time:.6f} seconds")  
-        playsound(audio_file_name)
+        play_audio(audio_file_name)
 
+def play_audio(file_path):
+    """Plays a WAV audio file using PyAudio."""
+    # Open the WAV file
+    wf = wave.open(file_path, 'rb')
 
+    # Initialize PyAudio
+    p = pyaudio.PyAudio()
+
+    # Open a stream to play audio
+    stream = p.open(
+        format=p.get_format_from_width(wf.getsampwidth()),
+        channels=wf.getnchannels(),
+        rate=wf.getframerate(),
+        output=True,
+        output_device_index=11
+    )
+
+    # Read and play audio in chunks
+    chunk_size = 1024
+    data = wf.readframes(chunk_size)
+    while data:
+        stream.write(data)
+        data = wf.readframes(chunk_size)
+
+    # Close stream and terminate PyAudio
+    stream.stop_stream()
+    stream.close()
+    p.terminate()
+    
 # This function is activated when the buttons of the voice menu are pressed
 def on_voice_select(voice_choice):
     global voice
@@ -352,7 +381,7 @@ def stop_program():
     try:
         # Delete the old "output.mp3"
         if os.path.exists("output.wav"):
-            os.remove("output.mp3")
+            os.remove("output.wav")
         # Stop pygame mixer if it's playing
         pygame.mixer.quit()
     except:

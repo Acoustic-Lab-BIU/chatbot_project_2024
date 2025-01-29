@@ -1,9 +1,8 @@
 import google.generativeai as genai
-import API_KEY # Import your own api key from google gemini models.
 
-def llm_query(prompt):
+def llm_query(prompt,creds):
     # config the api key and the requested model
-    genai.configure(api_key=API_KEY.API_KEY)
+    genai.configure(credentials=creds)
 
     ''' Options:
         Fast - gemini-1.5-flash-8b

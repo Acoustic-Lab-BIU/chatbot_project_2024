@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  tk-app:
+    build: .
+    container_name: my-tk-app
+    environment:
+      - DISPLAY=${DISPLAY}
+    volumes:
+      - .:/app # Mount the current directory as a volume to /app
+      - /tmp/.X11-unix:/tmp/.X11-unix # Enable X11 forwarding
+    devices:
+      - "/dev/bus/usb:/dev/bus/usb" # Pass USB devices to the container
+    privileged: true # Allow access to hardware devices
+    network_mode: host # Allows X11 forwarding to work smoothly
+    working_dir: /app
