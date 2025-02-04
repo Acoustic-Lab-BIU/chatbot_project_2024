@@ -14,11 +14,34 @@ from threading import Thread
 import pygame  
 from google.oauth2 import service_account
 import wave
+from contextlib import contextmanager
+import numpy as np
+import struct
 
 # Audio recording parameters
 RATE = 16000
 CHUNK = int(RATE / 10)  # 100ms
 Pause = False
+
+@contextmanager
+def ignore_stderr(enable=True):
+    if enable:
+        devnull = None
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            stderr = os.dup(2)
+            sys.stderr.flush()
+            os.dup2(devnull, 2)
+            try:
+                yield
+            finally:
+                os.dup2(stderr, 2)
+                os.close(stderr)
+        finally:
+            if devnull is not None:
+                os.close(devnull)
+    else:
+        yield
 
 class RedirectedOutput:
     def __init__(self, textbox_widget):
@@ -74,6 +97,169 @@ class RedirectedOutput:
     def flush(self):
         pass
 
+class RespeakerAudio(object):
+    def __init__(self,mono=True, channels=None, suppress_error=True):
+        self.on_audio = self._fill_buffer
+        with ignore_stderr(enable=suppress_error):
+            self.pyaudio = pyaudio.PyAudio()
+        self.available_channels = None
+        self.channels = channels
+        self.device_index = None
+        self.rate = 16000
+        self.bitwidth = 2
+        self.bitdepth = 16
+        self.nb_frames = 1024 # better fits our needs than the original 1024 value
+        self.format = pyaudio.paInt16
+        self.stream_callback_firstcall=True
+        self.tlast = 0
+        self.cbcount=0
+        self.cbmoy=0
+        self.M2=0
+        self.mono = mono
+        self._buff = queue.Queue()
+
+        # find device
+        count = self.pyaudio.get_device_count()
+        for i in range(count):
+            info = self.pyaudio.get_device_info_by_index(i)
+            name = info["name"]
+            chan = info["maxInputChannels"]
+            if name.lower().find("respeaker") >= 0:
+                self.available_channels = chan
+                self.device_index = i
+                break
+        if self.device_index is None:
+            info = self.pyaudio.get_default_input_device_info()
+            self.available_channels = info["maxInputChannels"]
+            self.device_index = info["index"]
+
+        if self.available_channels != 6:
+            print("You may have to update firmware.")
+        if self.channels is None:
+            self.channels = range(self.available_channels)
+        else:
+            self.channels = filter(lambda c: 0 <= c < self.available_channels, self.channels)
+        if not self.channels:
+            raise RuntimeError('Invalid channels %s. (Available channels are %s)' % (
+                self.channels, self.available_channels))
+
+
+    def __enter__(self: object) -> object:
+        if not self.mono:
+            self.stream = self.pyaudio.open(
+                input=True, start=False,
+                format=self.format,
+                channels=self.available_channels,
+                rate=self.rate,
+                frames_per_buffer=self.nb_frames,
+                stream_callback=self.stream_callback,
+                input_device_index=self.device_index,
+            )
+        else:
+            self.stream = self.pyaudio.open(
+            input=True, start=True,
+            format=self.format,
+            channels=self.available_channels,
+            rate=self.rate,
+            frames_per_buffer=self.nb_frames,
+            stream_callback=self._fill_buffer,
+            input_device_index=self.device_index)
+            
+        self.closed = False
+        
+        return self
+    
+    def __exit__(self: object,type: object,value: object,traceback: object,):
+        self.stream.stop_stream()
+        self.stream.close()
+        self.closed = True
+        # Signal the generator to terminate so that the client's
+        # streaming_recognize method will not block the process termination.
+        self._buff.put(None)
+        self.pyaudio.terminate()
+
+
+    def __del__(self):
+        self.stop()
+        try:
+            self.stream.close()
+        except:
+            pass
+        finally:
+            self.stream = None
+        try:
+            self.pyaudio.terminate()
+        except:
+            pass
+
+    def stream_callback(self, in_data, frame_count, time_info, status):
+ 	# retrieve audio data
+        data = np.fromstring(in_data, dtype=np.int16)
+        self.on_audio(data)
+        return None, pyaudio.paContinue
+    
+    def _fill_buffer(
+        self: object,
+        in_data: object,
+        frame_count: int,
+        time_info: object,
+        status_flags: object,) -> object:
+        """Continuously collect data from the audio stream, into the buffer.
+
+        Args:
+            in_data: The audio data as a bytes object
+            frame_count: The number of frames captured
+            time_info: The time information
+            status_flags: The status flags
+
+        Returns:
+            The audio data as a bytes object
+        """
+        if self.mono:
+            data = np.frombuffer(in_data, dtype=np.int16).reshape(self.nb_frames,6)  
+            in_data= data[:,1] #''.join(''.join(struct.pack('h', sample) for sample in data[:,1]))
+            in_data = in_data.tobytes()
+#        print(np.frombuffer(in_data,dtype=np.int16).max())
+        self._buff.put(in_data)
+        return None, pyaudio.paContinue
+    
+    def generator(self: object) -> object:
+        """Generates audio chunks from the stream of audio data in chunks.
+
+        Args:
+            self: The MicrophoneStream object
+
+        Returns:
+            A generator that outputs audio chunks.
+        """
+        while not self.closed:
+            # Use a blocking get() to ensure there's at least one chunk of
+            # data, and stop iteration if the chunk is None, indicating the
+            # end of the audio stream.
+            chunk = self._buff.get()
+            if chunk is None:
+                return
+            data = [chunk]
+
+            # Now consume whatever other data's still buffered.
+            while True:
+                try:
+                    chunk = self._buff.get(block=False)
+                    if chunk is None:
+                        return
+                    data.append(chunk)
+                except queue.Empty:
+                    break
+            yield b"".join(data)
+
+    def start(self):
+        if self.stream.is_stopped():
+            self.stream.start_stream()
+
+    def stop(self):
+        if self.stream.is_active():
+            self.stream.stop_stream()
+
 class MicrophoneStream:
     """Opens a recording stream as a generator yielding the audio chunks."""
 
@@ -92,11 +278,11 @@ class MicrophoneStream:
             format=pyaudio.paInt16,
             # The API currently only supports 1-channel (mono) audio
             # https://goo.gl/z757pE
-            channels=6,
+            channels=1,
             rate=self._rate,
             input=True,
             frames_per_buffer=self._chunk,
-            input_device_index=5,
+            input_device_index=12,
             # Run the audio stream asynchronously to fill the buffer object.
             # This is necessary so that the input device's buffer doesn't
             # overflow while the calling thread makes network requests, etc.
@@ -195,7 +381,7 @@ def listen_print_loop(stream: object, responses: object) -> str:
     """
     prompt = ""
     num_chars_printed = 0
-
+    print(prompt)
     for response in responses:
         if not response.results:
             continue
@@ -209,7 +395,6 @@ def listen_print_loop(stream: object, responses: object) -> str:
 
         # Display the transcription of the top alternative.
         transcript = result.alternatives[0].transcript
-
         # Display interim results, but with a carriage return at the end of the
         # line, so subsequent lines will overwrite them.
         #
@@ -224,7 +409,7 @@ def listen_print_loop(stream: object, responses: object) -> str:
 
         else:
             # User stopped talking
-            # print(transcript + overwrite_chars)
+            print(transcript + overwrite_chars)
             sys.stdout.write(transcript + overwrite_chars, update_now = True)
 
             # Exit recognition if any of the transcribed phrases could be
@@ -274,7 +459,6 @@ def main(lang: str, voice: int) -> str:
     language_code = lang  # For English: "en-US", For Hebrew: "iw"
     creds = service_account.Credentials.from_service_account_file(json_path)
     client = speech.SpeechClient(credentials=creds)
-
     config = speech.RecognitionConfig(
         encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
         sample_rate_hertz=RATE,
@@ -288,11 +472,16 @@ def main(lang: str, voice: int) -> str:
     questions = {"Q1": "","Q2": "","Q3": "","Q4": "","Q5": "",}   
     answers = {"A1": "","A2": "","A3": "","A4": "","A5": "",}
     free_space_index = 1
-
+    if language_code != "iw":
+        great_speech = TTS.tts('Hello. you can start talking in English and I will answer your questions',"en-US",voice)
+    else: 
+        great_speech = TTS.tts('שלום. אתה יכול להתחיל לדבר בעברית ואני אענה על שאלותיך',"iw",voice)
+    play_audio(great_speech)
     # Infinity loop
     while True: 
         # STT
-        with MicrophoneStream(RATE, CHUNK) as stream:
+        with RespeakerAudio(mono=True) as stream:
+        # with MicrophoneStream(RATE, CHUNK) as stream:
             audio_generator = stream.generator()
             requests = (
                 speech.StreamingRecognizeRequest(audio_content=content)
@@ -300,21 +489,21 @@ def main(lang: str, voice: int) -> str:
             )
             responses = client.streaming_recognize(streaming_config, requests)
             transcription = listen_print_loop(stream, responses)
-
         if len(transcription) == 0:
             continue
         
         questions = update_dict(questions, transcription, 5, "Q", free_space_index)  
         # Prompt enginerring
-        prompt = """You are a chatbot that supposed to have a conversation with users.
-                    Dont use asterisks or emojis, try to keep your answer short and to the point. 
+        prompt = """You are a chatbot that supposed to have a conversation with users at Bar Ilan university in Israel.
+                    refer 'the Universty' as Bar Ilan university in Israel . if the question is in Hebrew answer in Hebrew.
+                    Dont use asterisks or emojis, try to keep your answer short and to the point.
+                    Inject some light humor and wit to keep things fun, but stay professional and avoid excessive formality.
                     Every time I will send you this message and the five latest questions and answers I asked and you replied.
                     I will send you the history of our conversation in two dictionary formats,
                     the first will be the questions, and the second will be the answers accordingly.
                     I want you to return an answer to my latest question everytime based on the previous responses,
                     now this is my question: """ + transcription  + """and
                     this is the history of the questions, and answers: """ + str(questions) + str(answers) #and be as funny as you can.
-         
         start_time_llm = time.time() # Start time (LLM)
         answer = LLM.llm_query(prompt,creds=creds)
         end_time_llm = time.time()
@@ -343,7 +532,6 @@ def play_audio(file_path):
     """Plays a WAV audio file using PyAudio."""
     # Open the WAV file
     wf = wave.open(file_path, 'rb')
-
     # Initialize PyAudio
     p = pyaudio.PyAudio()
 
@@ -353,7 +541,7 @@ def play_audio(file_path):
         channels=wf.getnchannels(),
         rate=wf.getframerate(),
         output=True,
-        output_device_index=11
+        output_device_index=5
     )
 
     # Read and play audio in chunks
@@ -416,7 +604,7 @@ def start_function_english():
     stop_button.pack(pady=10)  # Show the stop button
     textbox.delete(1.0, tk.END)  # Clear any existing text
     stdout_redirector.write("Start talking in English\n")  # Initial message
-    
+
     # Start main function in a separate thread
     thread = Thread(target=lambda: main(lang="en-US", voice=voice))
     thread.daemon = True  # Set as daemon so it will be killed when main program exits
@@ -430,7 +618,7 @@ def start_function_hebrew():
     stop_button.pack(pady=10)  # Show the stop button
     textbox.delete(1.0, tk.END)  # Clear any existing text
     stdout_redirector.write("Start talking in Hebrew\n")  # Initial message
-    
+     
     # Start main function in a separate thread
     thread = Thread(target=lambda: main(lang="iw", voice=voice))
     thread.daemon = True  # Set as daemon so it will be killed when main program exits
