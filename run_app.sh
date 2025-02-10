@@ -26,12 +26,13 @@ docker run -it --rm \
     --env DISPLAY=$DISPLAY \
     --volume "$HOME/.Xauthority:/root/.Xauthority:rw" \
     --volume /tmp/.X11-unix:/tmp/.X11-unix \
+    -e TZ=Asia/Jerusalem \
     --volume "/home/pal/chatbot_project_2024:/app" \
     --volume "/etc/resolv.conf:/etc/resolv.conf" \
     --privileged \
     --net host \
     --workdir "$WORKDIR" "$IMAGE_NAME" \
-    bash -c "echo \"$PYTHON_SCRIPT_CONTENT\" > /app/temp_script.py && python3 /app/temp_script.py"
+    bash  -c "echo \"$PYTHON_SCRIPT_CONTENT\" > /app/temp_script.py && python3 /app/temp_script.py"
 
 
 

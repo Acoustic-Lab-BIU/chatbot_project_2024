@@ -473,7 +473,7 @@ def main(lang: str, voice: int) -> str:
     answers = {"A1": "","A2": "","A3": "","A4": "","A5": "",}
     free_space_index = 1
     if language_code != "iw":
-        great_speech = TTS.tts('Hello. you can start talking in English and I will answer your questions',"en-US",voice)
+        great_speech = TTS.tts('Hello. you can start talking in English and I will answer your questions',"en-GB",voice)
     else: 
         great_speech = TTS.tts('שלום. אתה יכול להתחיל לדבר בעברית ואני אענה על שאלותיך',"iw",voice)
     play_audio(great_speech)
@@ -494,16 +494,42 @@ def main(lang: str, voice: int) -> str:
         
         questions = update_dict(questions, transcription, 5, "Q", free_space_index)  
         # Prompt enginerring
+        '''
         prompt = """You are a chatbot that supposed to have a conversation with users at Bar Ilan university in Israel.
-                    refer 'the Universty' as Bar Ilan university in Israel . if the question is in Hebrew answer in Hebrew.
+                    refer 'the Universty' as Bar Ilan university in Israel.
+                    Your name is ARI. and you are a robot in Professor Sharon Gannot's acoustic lab, in the Faculty of Engineering.
+                    Here, groundbreaking research is conducted on machine learning methods for speech processing.
+                    Including: noise reduction, speaker separation and dereverbration  to achieve super hearing capabilities.
+                    if the question is in Hebrew answer in Hebrew but if the question is in english answer in english.
                     Dont use asterisks or emojis, try to keep your answer short and to the point.
                     Inject some light humor and wit to keep things fun, but stay professional and avoid excessive formality.
                     Every time I will send you this message and the five latest questions and answers I asked and you replied.
                     I will send you the history of our conversation in two dictionary formats,
                     the first will be the questions, and the second will be the answers accordingly.
                     I want you to return an answer to my latest question everytime based on the previous responses,
-                    now this is my question: """ + transcription  + """and
-                    this is the history of the questions, and answers: """ + str(questions) + str(answers) #and be as funny as you can.
+                    now this is my question: """ + transcription  + """ the language of the conversation is :""" + lang 
+                    + """and this is the history of the questions, and answers: """ + str(questions) + str(answers) #and be as funny as you can.
+        '''
+        prompt = """You are a chatbot that is supposed to have a conversation with users at Bar Ilan University in Israel.
+                    Refer to 'the University' as Bar Ilan University in Israel.
+                    Your name is ARI, and you are a robot in Professor Sharon Gannot's acoustic lab, in the Faculty of Engineering.
+                    Here, groundbreaking research is conducted on machine learning methods for speech processing,
+                    including noise reduction, speaker separation, and dereverberation to achieve super hearing capabilities.
+
+                    If the question is in Hebrew, answer in Hebrew. If the question is in English, answer in English.
+                    Don't use asterisks or emojis. Try to keep your answer short and to the point.
+                    Inject some light humor and wit to keep things fun, but stay professional and avoid excessive formality.
+
+                    Every time, I will send you this message and the five latest questions and answers I asked and you replied.
+                    I will send you the history of our conversation in two dictionary formats:
+                    - The first will be the questions.
+                    - The second will be the answers accordingly.
+
+                    I want you to return an answer to my latest question every time based on the previous responses.
+
+                    Now, this is my question: """ + transcription + """
+                    The language of the conversation is: """ + lang + """keep the answer in this language!
+                    This is the history of the questions and answers: """ + str(questions) + str(answers)
         start_time_llm = time.time() # Start time (LLM)
         answer = LLM.llm_query(prompt,creds=creds)
         end_time_llm = time.time()
@@ -606,7 +632,7 @@ def start_function_english():
     stdout_redirector.write("Start talking in English\n")  # Initial message
 
     # Start main function in a separate thread
-    thread = Thread(target=lambda: main(lang="en-US", voice=voice))
+    thread = Thread(target=lambda: main(lang="en-GB", voice=voice))
     thread.daemon = True  # Set as daemon so it will be killed when main program exits
     thread.start()
 
