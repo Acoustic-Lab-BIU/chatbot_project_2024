@@ -22,6 +22,24 @@ import struct
 RATE = 16000
 CHUNK = int(RATE / 10)  # 100ms
 Pause = False
+def get_audio_device():
+    pa =pyaudio.PyAudio()
+    count = pa.get_device_count()
+    for i in range(count):
+        info = pa.get_device_info_by_index(i)
+        name = info["name"]
+        chan = info["maxInputChannels"]
+        if name.lower().find("respeaker") >= 0:
+            available_channels = chan
+            device_index = i
+            break
+    if device_index is None:
+        info = pa.get_default_input_device_info()
+        available_channels = info["maxInputChannels"]
+        device_index = info["index"]
+    return device_index
+
+DEVICE_INDEX= get_audio_device()
 
 @contextmanager
 def ignore_stderr(enable=True):
@@ -98,7 +116,7 @@ class RedirectedOutput:
         pass
 
 class RespeakerAudio(object):
-    def __init__(self,mono=True, channels=None, suppress_error=True):
+    def __init__(self,mono=True, channels=None, suppress_error=True,input_mic = True):
         self.on_audio = self._fill_buffer
         with ignore_stderr(enable=suppress_error):
             self.pyaudio = pyaudio.PyAudio()
@@ -116,6 +134,7 @@ class RespeakerAudio(object):
         self.cbmoy=0
         self.M2=0
         self.mono = mono
+        self.input_mic = input_mic
         self._buff = queue.Queue()
 
         # find device
@@ -147,7 +166,7 @@ class RespeakerAudio(object):
     def __enter__(self: object) -> object:
         if not self.mono:
             self.stream = self.pyaudio.open(
-                input=True, start=False,
+                input=self.input_mic, start=False,
                 format=self.format,
                 channels=self.available_channels,
                 rate=self.rate,
@@ -157,7 +176,7 @@ class RespeakerAudio(object):
             )
         else:
             self.stream = self.pyaudio.open(
-            input=True, start=True,
+            input=self.input_mic, start=True,
             format=self.format,
             channels=self.available_channels,
             rate=self.rate,
@@ -260,103 +279,7 @@ class RespeakerAudio(object):
         if self.stream.is_active():
             self.stream.stop_stream()
 
-class MicrophoneStream:
-    """Opens a recording stream as a generator yielding the audio chunks."""
 
-    def __init__(self: object, rate: int = RATE, chunk: int = CHUNK) -> None:
-        """The audio -- and generator -- is guaranteed to be on the main thread."""
-        self._rate = rate
-        self._chunk = chunk
-
-        # Create a thread-safe buffer of audio data
-        self._buff = queue.Queue()
-        self.closed = True
-
-    def __enter__(self: object) -> object:
-        self._audio_interface = pyaudio.PyAudio()
-        self._audio_stream = self._audio_interface.open(
-            format=pyaudio.paInt16,
-            # The API currently only supports 1-channel (mono) audio
-            # https://goo.gl/z757pE
-            channels=1,
-            rate=self._rate,
-            input=True,
-            frames_per_buffer=self._chunk,
-            input_device_index=12,
-            # Run the audio stream asynchronously to fill the buffer object.
-            # This is necessary so that the input device's buffer doesn't
-            # overflow while the calling thread makes network requests, etc.
-            stream_callback=self._fill_buffer,
-        )
-        self.closed = False
-
-        return self
-
-    def __exit__(
-        self: object,
-        type: object,
-        value: object,
-        traceback: object,
-    ) -> None:
-        """Closes the stream, regardless of whether the connection was lost or not."""
-        self._audio_stream.stop_stream()
-        self._audio_stream.close()
-        self.closed = True
-        # Signal the generator to terminate so that the client's
-        # streaming_recognize method will not block the process termination.
-        self._buff.put(None)
-        self._audio_interface.terminate()
-
-    def _fill_buffer(
-        self: object,
-        in_data: object,
-        frame_count: int,
-        time_info: object,
-        status_flags: object,
-    ) -> object:
-        """Continuously collect data from the audio stream, into the buffer.
-
-        Args:
-            in_data: The audio data as a bytes object
-            frame_count: The number of frames captured
-            time_info: The time information
-            status_flags: The status flags
-
-        Returns:
-            The audio data as a bytes object
-        """
-        self._buff.put(in_data)
-        return None, pyaudio.paContinue
-
-    def generator(self: object) -> object:
-        """Generates audio chunks from the stream of audio data in chunks.
-
-        Args:
-            self: The MicrophoneStream object
-
-        Returns:
-            A generator that outputs audio chunks.
-        """
-        while not self.closed:
-            # Use a blocking get() to ensure there's at least one chunk of
-            # data, and stop iteration if the chunk is None, indicating the
-            # end of the audio stream.
-            chunk = self._buff.get()
-            if chunk is None:
-                return
-            data = [chunk]
-
-            # Now consume whatever other data's still buffered.
-            while True:
-                try:
-                    chunk = self._buff.get(block=False)
-                    if chunk is None:
-                        return
-                    data.append(chunk)
-                except queue.Empty:
-                    break
-
-            yield b"".join(data)
 
 def listen_print_loop(stream: object, responses: object) -> str:
     """Iterates through server responses and prints them.
@@ -381,7 +304,6 @@ def listen_print_loop(stream: object, responses: object) -> str:
     """
     prompt = ""
     num_chars_printed = 0
-    print(prompt)
     for response in responses:
         if not response.results:
             continue
@@ -545,7 +467,8 @@ def main(lang: str, voice: int) -> str:
         print(f"\nOverall time: {tts_execution_time + llm_execution_time:.6f} seconds")  
         play_audio(audio_file_name)
 
-def play_audio(file_path):
+def play_audio(file_path,device_idx=DEVICE_INDEX):
+
     """Plays a WAV audio file using PyAudio."""
     # Open the WAV file
     wf = wave.open(file_path, 'rb')
@@ -558,7 +481,7 @@ def play_audio(file_path):
         channels=wf.getnchannels(),
         rate=wf.getframerate(),
         output=True,
-        output_device_index=13
+        output_device_index=device_idx
     )
 
     # Read and play audio in chunks
